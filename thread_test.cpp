@@ -5,13 +5,9 @@
 using namespace std;
 using namespace thread_pool;
 
-int test(atomic<int>& temp){
+void test(atomic<int>& temp){
+    this_thread::sleep_for(std::chrono::milliseconds(1));
     temp++;
-    int count = 0;
-    for(int i = 0; i < 1000; i++){
-        count++;
-    }
-    return count;
 }
 
 int main(){

@@ -23,19 +23,19 @@ public:
     TaskQueue& operator=(TaskQueue&&) = delete;
 
     bool empty(){
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(queue_lock_);
         return queue_.empty();
     }
     int size(){
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(queue_lock_);
         return queue_.size();
     }
     void enqueue(Func& task){
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(queue_lock_);
         queue_.emplace(task);
     }
     bool dequeue(Func& func) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(queue_lock_);
         if(!queue_.empty()){
             func = std::move(queue_.front());
             queue_.pop();
@@ -46,7 +46,7 @@ public:
 
 private:
     std::queue<Func> queue_;
-    std::mutex mutex_;
+    std::mutex queue_lock_;
 };
 
 /**************************
@@ -75,42 +75,29 @@ private:
         void shutdown(){ is_shutdown_ = true; }
         int getId() const { return thread_id_; }
         void operator()(){
+            std::function<void()> func;
+            bool is_get = false;
             while(!is_shutdown_){
-                // if(func_count_ > 1000){
-                //     std::cout << std::endl;
-                // }else{
-                //     std::cout << func_count_ << std::endl;
-                // }
-                if(!thread_pool_->task_queue_.empty()){
-                    // std::cout << "thread " << thread_id_ << " queue has element " << func_count_ << std::endl;
-                    std::function<void()> func;
-                    bool is_get = false;
-                    {
-                        std::unique_lock<std::mutex> loc(thread_pool_->lock_);
-                        // std::cout << "thread " << thread_id_ << " get lock " << func_count_ << std::endl;
-                        if(thread_pool_->task_queue_.empty()){
-                            // std::cout << "thread " << thread_id_ << " wait " << func_count_ << std::endl;
-                            thread_pool_->cv_.wait(loc);
-                            // std::cout << "thread " << thread_id_ << " wakeup " << func_count_ << std::endl;
-                        }
-                        // std::cout << "thread " << thread_id_ << " get task " << func_count_ << std::endl;
-                        is_get = thread_pool_->task_queue_.dequeue(func);
-                    }
-                    if(is_get){
-                        // std::cout << "thread " << thread_id_ << " doing func " << func_count_ << std::endl;
-                        func_count_++;
-                        func();
-                    }
+                is_get = false;
+                {
+                    std::unique_lock<std::mutex> lock(thread_pool_->lock_);
+                    thread_pool_->cv_.wait(lock, [this]{
+                        if(this->is_shutdown_) return true;
+                        return !this->thread_pool_->task_queue_.empty();
+                    });
+                    is_get = thread_pool_->task_queue_.dequeue(func);
+                }
+                if(is_get){
+                    func();
                 }
             }
         }
-    private:
+    public:
         int thread_id_;
         bool is_shutdown_ = false;
         ThreadPool* thread_pool_;
         std::thread thread_;
         static int count_;
-        static int func_count_;
     };
 
 public:
@@ -170,13 +157,13 @@ public:
         for(auto& ptr : threads_){
             if(ptr->thread_.joinable()){
                 ptr->thread_.join();
+                // std::cout << "thread " << ptr->thread_id_ << " destroyed" << std::endl;
                 delete ptr;
             }
         }
     }
 private:
     void shutdownThread(int num){
-        std::lock_guard<std::mutex> lock(vec_lock_);
         for(int i = 0; i < num; i++){
             threads_[i]->shutdown();
         }
@@ -190,10 +177,8 @@ private:
     std::vector<Thread*> threads_;
     std::condition_variable cv_;
     std::mutex lock_;
-    std::mutex vec_lock_;
     int thread_size_;
 };
 int ThreadPool::Thread::count_ = 0;
-int ThreadPool::Thread::func_count_ = 0;
 
 }
