@@ -1,12 +1,3 @@
-# Thread-Poll
-![](https://img.shields.io/badge/c%2B%2B-11-blue) ![](https://img.shields.io/badge/license-mit-blue)
-
-### 介绍
-Thread-Poll 是一个用 C++11 实现的一个简易线程池，可动态增减当前运行线程。导入只需引入头文件，无第三方库依赖
-
-### 示例
-
-```cpp
 #include "thread_pool.h"
 #include <iostream>
 
@@ -43,4 +34,3 @@ int main(){
 
     return 0;
 }
-```

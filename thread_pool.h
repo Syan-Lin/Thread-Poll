@@ -1,4 +1,3 @@
-#include <iostream>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -7,11 +6,6 @@
 
 namespace thread_pool {
 
-/**************************
-* @author   Yuan.
-* @date     2022/9/30
-* @brief    线程安全的队列
-***************************/
 template <typename Func>
 class TaskQueue {
 public:
@@ -29,6 +23,12 @@ public:
     int size(){
         std::lock_guard<std::mutex> lock(queue_lock_);
         return queue_.size();
+    }
+    void clear(){
+        std::lock_guard<std::mutex> lock(queue_lock_);
+        while(!queue_.empty()){
+            queue_.pop();
+        }
     }
     void enqueue(Func& task){
         std::lock_guard<std::mutex> lock(queue_lock_);
@@ -49,23 +49,15 @@ private:
     std::mutex queue_lock_;
 };
 
-/**************************
-* @author   Yuan.
-* @date     2022/9/30
-* @brief    线程池实现
-***************************/
 class ThreadPool{
     friend class Thread;
-private:
-    /**************************
-    * @author   Yuan.
-    * @date     2022/9/30
-    * @brief    类内对象，线程
-    ***************************/
+
     class Thread{
         friend class ThreadPool;
     public:
-        Thread(ThreadPool* pool) : thread_id_(count_++), thread_pool_(pool){
+        Thread(ThreadPool* pool) : thread_pool_(pool){
+            static int count = 0;
+            thread_id_ = count++;
             thread_ = std::thread(std::ref(*this));
         }
         Thread(const Thread&) = delete;
@@ -80,7 +72,7 @@ private:
             while(!is_shutdown_){
                 is_get = false;
                 {
-                    std::unique_lock<std::mutex> lock(thread_pool_->lock_);
+                    std::unique_lock<std::mutex> lock(thread_pool_->task_lock_);
                     thread_pool_->cv_.wait(lock, [this]{
                         if(this->is_shutdown_) return true;
                         return !this->thread_pool_->task_queue_.empty();
@@ -91,36 +83,31 @@ private:
                     func();
                 }
             }
+            is_over_ = true;
         }
     public:
         int thread_id_;
         bool is_shutdown_ = false;
+        bool is_over_ = false;
         ThreadPool* thread_pool_;
         std::thread thread_;
-        static int count_;
     };
 
 public:
-    ThreadPool(size_t num = 6) : thread_size_(num){
+    ThreadPool(size_t num = 6){
         createThread(num);
     }
     ThreadPool(const ThreadPool &) = delete;
     ThreadPool(ThreadPool &&) = delete;
     ThreadPool &operator=(const ThreadPool &) = delete;
     ThreadPool &operator=(ThreadPool &&) = delete;
-    ~ThreadPool(){
-        this->shutdown();
-    }
-    template<typename T>
-    void test(T&& t);
+    ~ThreadPool() { shutdown(); }
 
-    // 向线程池提交任务
     template<typename Func, typename... Args>
     auto submit(Func&& f, Args&&... args) -> std::future<decltype(f(args...))>{
         // 1. 包装一层 function，消去参数
         // <decltype(f(args...))()> 表示返回值为函数 f 的返回值的一个函数，但没有参数
         // 参数用 std::bind 将 args 绑定到 func 上，所以 func 里不需要指定参数
-        // test<Args...>();
         std::function<decltype(f(args...))()> func = std::bind(std::forward<Func>(f), std::forward<Args>(args)...);
 
         // 2. 用 packaged_task 包装函数，结果可以用 future 获得，使函数获得异步特性
@@ -136,49 +123,60 @@ public:
         cv_.notify_one();
         return tast_ptr->get_future();
     }
-    // 查看线程数
-    int size() const { return thread_size_; }
-    // 真正运行的线程数
-    int workingSize() const { return threads_.size(); }
-    // 设置线程数
-    void setSize(int size){
-        if(size < thread_size_){
-            shutdownThread(thread_size_ - size);
-        }else{
-            createThread(size - thread_size_);
+    size_t size() const {
+        size_t count = 0;
+        for(auto& e : threads_){
+            if(!e->is_over_) count++;
         }
-        thread_size_ = size;
+        return count;
     }
-    // 关闭线程池
+    void setSize(size_t target_size){
+        size_t cur_size = size();
+        if(target_size < cur_size){
+            shutdownThread(cur_size - target_size);
+        }else{
+            createThread(target_size - cur_size);
+        }
+    }
     void shutdown(){
-        shutdownThread(threads_.size());
-        int count = 0;
+        shutdownThread(size());
         cv_.notify_all();
-        for(auto& ptr : threads_){
-            if(ptr->thread_.joinable()){
-                ptr->thread_.join();
-                // std::cout << "thread " << ptr->thread_id_ << " destroyed" << std::endl;
-                delete ptr;
+        for(auto& e : threads_){
+            std::unique_lock<std::mutex> lock(lock_);
+            if(e->thread_.joinable()){
+                e->thread_.join();
+                delete e;
             }
         }
+        threads_.clear();
+    }
+    void cancel(){
+        task_queue_.clear();
     }
 private:
-    void shutdownThread(int num){
-        for(int i = 0; i < num; i++){
-            threads_[i]->shutdown();
+    void shutdownThread(size_t num){
+        static size_t begin = 0;
+        size_t temp = begin;
+        thread_size_ -= num;
+        for(; begin < num + temp; begin++){
+            std::unique_lock<std::mutex> lock(lock_);
+            auto& ptr = threads_.at(begin);
+            ptr->shutdown();
         }
     }
-    void createThread(int num){
-        for(int i = 0; i < num; i++){
+    void createThread(size_t num){
+        thread_size_ += num;
+        for(size_t i = 0; i < num; i++){
+            std::unique_lock<std::mutex> lock(lock_);
             threads_.push_back(new Thread(this));
         }
     }
     TaskQueue<std::function<void()>> task_queue_;
     std::vector<Thread*> threads_;
     std::condition_variable cv_;
+    std::mutex task_lock_;
     std::mutex lock_;
-    int thread_size_;
+    size_t thread_size_ = 0;
 };
-int ThreadPool::Thread::count_ = 0;
 
-}
+} // namespace thread_pool
