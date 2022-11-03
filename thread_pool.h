@@ -1,5 +1,6 @@
 #include <mutex>
 #include <queue>
+#include <random>
 #include <thread>
 #include <future>
 #include <functional>
@@ -16,27 +17,27 @@ public:
     TaskQueue& operator=(const TaskQueue&) = delete;
     TaskQueue& operator=(TaskQueue&&) = delete;
 
-    bool empty(){
+    bool empty() {
         std::lock_guard<std::mutex> lock(queue_lock_);
         return queue_.empty();
     }
-    int size(){
+    int size() {
         std::lock_guard<std::mutex> lock(queue_lock_);
         return queue_.size();
     }
-    void clear(){
+    void clear() {
         std::lock_guard<std::mutex> lock(queue_lock_);
         while(!queue_.empty()){
             queue_.pop();
         }
     }
-    void enqueue(Func& task){
+    void enqueue(Func& task) {
         std::lock_guard<std::mutex> lock(queue_lock_);
         queue_.emplace(task);
     }
     bool dequeue(Func& func) {
         std::lock_guard<std::mutex> lock(queue_lock_);
-        if(!queue_.empty()){
+        if(!queue_.empty()) {
             func = std::move(queue_.front());
             queue_.pop();
             return true;
@@ -49,13 +50,13 @@ private:
     std::mutex queue_lock_;
 };
 
-class ThreadPool{
+class ThreadPool {
     friend class Thread;
 
-    class Thread{
+    class Thread {
         friend class ThreadPool;
     public:
-        Thread(ThreadPool* pool) : thread_pool_(pool){
+        Thread(ThreadPool* pool) : thread_pool_(pool) {
             static int count = 0;
             thread_id_ = count++;
             thread_ = std::thread(std::ref(*this));
@@ -64,22 +65,22 @@ class ThreadPool{
         Thread(Thread&&) = delete;
         Thread& operator=(const Thread&) = delete;
         Thread& operator=(Thread&&) = delete;
-        void shutdown(){ is_shutdown_ = true; }
+        void shutdown() { is_shutdown_ = true; }
         int getId() const { return thread_id_; }
-        void operator()(){
+        void operator()() {
             std::function<void()> func;
             bool is_get = false;
-            while(!is_shutdown_){
+            while(!is_shutdown_) {
                 is_get = false;
                 {
                     std::unique_lock<std::mutex> lock(thread_pool_->task_lock_);
-                    thread_pool_->cv_.wait(lock, [this]{
+                    thread_pool_->cv_.wait(lock, [this] {
                         if(this->is_shutdown_) return true;
                         return !this->thread_pool_->task_queue_.empty();
                     });
                     is_get = thread_pool_->task_queue_.dequeue(func);
                 }
-                if(is_get){
+                if(is_get) {
                     func();
                 }
             }
@@ -94,7 +95,7 @@ class ThreadPool{
     };
 
 public:
-    ThreadPool(size_t num = 6){
+    ThreadPool(size_t num = 6) {
         createThread(num);
     }
     ThreadPool(const ThreadPool &) = delete;
@@ -104,7 +105,7 @@ public:
     ~ThreadPool() { shutdown(); }
 
     template<typename Func, typename... Args>
-    auto submit(Func&& f, Args&&... args) -> std::future<decltype(f(args...))>{
+    auto submit(Func&& f, Args&&... args) -> std::future<decltype(f(args...))> {
         // 1. 包装一层 function，消去参数
         // <decltype(f(args...))()> 表示返回值为函数 f 的返回值的一个函数，但没有参数
         // 参数用 std::bind 将 args 绑定到 func 上，所以 func 里不需要指定参数
@@ -115,7 +116,7 @@ public:
         auto tast_ptr = std::make_shared<std::packaged_task<decltype(f(args...))()>>(func);
 
         // 3. 再包装一层 function，使接口统一，可以放入队列
-        std::function<void()> unified_func = [tast_ptr](){
+        std::function<void()> unified_func = [tast_ptr]() {
             (*tast_ptr)();
         };
 
@@ -123,51 +124,35 @@ public:
         cv_.notify_one();
         return tast_ptr->get_future();
     }
-    size_t size() const {
-        size_t count = 0;
-        for(auto& e : threads_){
-            if(!e->is_over_) count++;
-        }
-        return count;
-    }
-    void setSize(size_t target_size){
+    size_t size() const { return threads_.size(); }
+    void setSize(size_t target_size) {
+        if(target_size == 0 || target_size == threads_.size()) return;
         size_t cur_size = size();
-        if(target_size < cur_size){
+        if(target_size < cur_size) {
             shutdownThread(cur_size - target_size);
-        }else{
+        } else {
             createThread(target_size - cur_size);
         }
     }
-    void shutdown(){
-        shutdownThread(size());
-        cv_.notify_all();
-        for(auto& e : threads_){
-            std::unique_lock<std::mutex> lock(lock_);
-            if(e->thread_.joinable()){
-                e->thread_.join();
-                delete e;
+    void shutdown() { shutdownThread(size()); }
+    void cancel() { task_queue_.clear(); }
+private:
+    void shutdownThread(size_t num) {
+        for(size_t i = 0; i < num; ++i) {
+            {
+                std::unique_lock<std::mutex> lock(task_lock_);
+                threads_[i]->shutdown();
+            }
+            cv_.notify_all();
+            if(threads_[i]->thread_.joinable()) {
+                threads_[i]->thread_.join();
+                delete threads_[i];
             }
         }
-        threads_.clear();
+        threads_.erase(threads_.begin(), threads_.begin() + num);
     }
-    void cancel(){
-        task_queue_.clear();
-    }
-private:
-    void shutdownThread(size_t num){
-        static size_t begin = 0;
-        size_t temp = begin;
-        thread_size_ -= num;
-        for(; begin < num + temp; begin++){
-            std::unique_lock<std::mutex> lock(lock_);
-            auto& ptr = threads_.at(begin);
-            ptr->shutdown();
-        }
-    }
-    void createThread(size_t num){
-        thread_size_ += num;
-        for(size_t i = 0; i < num; i++){
-            std::unique_lock<std::mutex> lock(lock_);
+    void createThread(size_t num) {
+        for(size_t i = 0; i < num; i++) {
             threads_.push_back(new Thread(this));
         }
     }
@@ -175,8 +160,6 @@ private:
     std::vector<Thread*> threads_;
     std::condition_variable cv_;
     std::mutex task_lock_;
-    std::mutex lock_;
-    size_t thread_size_ = 0;
 };
 
 } // namespace thread_pool

@@ -10,36 +10,34 @@ Thread-Poll 是一个用 C++11 实现的一个简易线程池，可动态增减�
 #include "thread_pool.h"
 #include <iostream>
 
-using namespace std;
 using namespace thread_pool;
 
-void count(atomic<int>& num){
-    this_thread::sleep_for(chrono::milliseconds(10));
+void count(std::atomic<int>& num){
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     num++;
 }
 
 int main(){
-    atomic<int> num(0);
-    ThreadPool tp(20);
+    std::atomic<int> num(0);
+    ThreadPool tp;
     int times = 1000;
-    vector<future<void>> futures;
+    std::vector<std::future<void>> futures;
     for(int i = 0; i < times; i++){
-        futures.emplace_back(tp.submit(count, std::ref(num)));
+        futures.push_back(tp.submit(::count, std::ref(num)));
     }
-    // reduce worker thread
+    // set the quantity of worker threads
     tp.setSize(10);
-    this_thread::sleep_for(chrono::milliseconds(500));
-    // increase worker thread
-    tp.setSize(20);
-    // cancel tasks remained in queue
+
+    // cancel all tasks remained in task queue
     // with this called, the result may less than 1000
     tp.cancel();
 
     for(auto& e : futures){
         e.wait();
     }
+
     // the result should be 1000 if cancel is not called
-    cout << "result: " << num << endl;
+    std::cout << "result: " << num << std::endl;
 
     return 0;
 }
